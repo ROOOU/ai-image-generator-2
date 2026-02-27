@@ -60,9 +60,8 @@ interface HistoryItem {
   model: string;
   imageUrl: string;
   thumbnailUrl?: string;
-  inputImageUrls?: string[];
   url?: string; // for backward compatibility in UI
-  referenceImage?: string; // Added for the UI modal logic
+  referenceImage?: string; // UI backward compatibility to align with API
 }
 
 // Generate thumbnail helper
@@ -680,6 +679,42 @@ export default function ImageGenerator() {
                 )}
               </div>
             </div>
+            <div className="mt-8">
+              <button
+                onClick={handleGenerate}
+                disabled={isGenerating || !prompt.trim() || ((mode === 'image-to-image' || mode === 'extend-image') && !referenceImage)}
+                className="w-full py-4 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-medium transition-all duration-200 disabled:opacity-50 disabled:hover:bg-indigo-600 flex items-center justify-center gap-2 shadow-sm hover:shadow-md lg:hidden"
+              >
+                {isGenerating ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-5 h-5" />
+                    Generate Image
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handleGenerate}
+                disabled={isGenerating || !prompt.trim() || ((mode === 'image-to-image' || mode === 'extend-image') && !referenceImage)}
+                className="hidden lg:flex w-full py-4 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-medium transition-all duration-200 disabled:opacity-50 disabled:hover:bg-indigo-600 items-center justify-center gap-2 shadow-sm hover:shadow-md"
+              >
+                {isGenerating ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-5 h-5" />
+                    Generate Image
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       ) : (
@@ -696,7 +731,7 @@ export default function ImageGenerator() {
             </h2>
           </div>
 
-          {history.length === 0 ? (
+          {(!history || history.length === 0) ? (
             <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-4">
               <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center">
                 <ImageIcon className="w-8 h-8 text-gray-300" />
@@ -712,7 +747,7 @@ export default function ImageGenerator() {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
               <AnimatePresence>
-                {history.map((item) => (
+                {Array.isArray(history) && history.map((item) => (
                   <motion.div
                     key={item.id}
                     layout
