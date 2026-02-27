@@ -1,0 +1,5 @@
+{
+  "name": "AI Image Generator",
+  "description": "A website to generate images using Gemini AI.",
+  "requestFramePermissions": []
+}
