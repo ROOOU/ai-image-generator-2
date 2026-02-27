@@ -8,7 +8,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { OutpaintCanvas, OutpaintCanvasRef } from './OutpaintCanvas';
-import HistoryPanel from './HistoryPanel';
 
 declare global {
   interface Window {
@@ -62,6 +61,8 @@ interface HistoryItem {
   imageUrl: string;
   thumbnailUrl?: string;
   inputImageUrls?: string[];
+  url?: string; // for backward compatibility in UI
+  referenceImage?: string; // Added for the UI modal logic
 }
 
 // Generate thumbnail helper
@@ -103,33 +104,67 @@ export default function ImageGenerator() {
   const [hasKey, setHasKey] = useState(false);
   const [localApiKey, setLocalApiKey] = useState('');
 
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<HistoryItem | null>(null);
+
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const outpaintCanvasRef = useRef<OutpaintCanvasRef>(null);
 
-  useEffect(() => {
-    const savedKey = localStorage.getItem('gemini_api_key') || '';
-    setLocalApiKey(savedKey);
-    if (savedKey) {
-      setHasKey(true);
-    } else {
-      const checkKey = async () => {
-        if (window.aistudio) {
-          const keyStatus = await window.aistudio.hasSelectedApiKey();
-          setHasKey(keyStatus);
-        } else {
-          setHasKey(true); // Fallback for local dev
+  const fetchHistory = async (key: string) => {
+    if (!key) return;
+    try {
+      const response = await fetch('/api/history', {
+        headers: {
+          'x-api-key': key
         }
-      };
-      checkKey();
+      });
+      if (response.ok) {
+        const data = await response.json();
+        // Map the API data structure to the original UI interface expectations
+        const mappedHistory = data.map((item: any) => ({
+          ...item,
+          url: item.imageUrl,
+          referenceImage: item.inputImageUrls?.[0]
+        }));
+        setHistory(mappedHistory);
+      }
+    } catch (e) {
+      console.error('Failed to load history', e);
     }
+  };
+
+  useEffect(() => {
+    const checkKey = async () => {
+      let savedKey = localStorage.getItem('gemini_api_key') || '';
+
+      // If we don't have a locally saved key, try to wait and get it from aistudio if it exists
+      if (!savedKey && window.aistudio) {
+        const keyStatus = await window.aistudio.hasSelectedApiKey();
+        if (keyStatus) {
+          // We have a selection but no direct access to key here in standard flow, 
+          // falling back to assuming user will fill Settings input.
+          setHasKey(true);
+        }
+      } else if (savedKey) {
+        setHasKey(true);
+        setLocalApiKey(savedKey);
+        fetchHistory(savedKey);
+      } else {
+        setHasKey(true); // Fallback for local dev
+      }
+    };
+    checkKey();
   }, []);
 
   const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newKey = e.target.value;
     setLocalApiKey(newKey);
     localStorage.setItem('gemini_api_key', newKey);
-    if (newKey) setHasKey(true);
+    if (newKey) {
+      setHasKey(true);
+      fetchHistory(newKey);
+    }
   };
 
   // Reset incompatible settings when model changes
@@ -269,7 +304,7 @@ export default function ImageGenerator() {
             if (finalMode === 'img2img' && referenceImage) inputImagesData.push(referenceImage);
             else if (finalMode === 'outpaint' && referenceImage) inputImagesData.push(referenceImage);
 
-            await fetch('/api/history', {
+            const res = await fetch('/api/history', {
               method: 'POST',
               headers: historyHeaders,
               body: JSON.stringify({
@@ -283,6 +318,16 @@ export default function ImageGenerator() {
                 aspectRatio,
               }),
             });
+
+            if (res.ok) {
+              const savedItem = await res.json();
+              // Update local state with the saved item format
+              setHistory(prev => [{
+                ...savedItem,
+                url: savedItem.imageUrl,
+                referenceImage: savedItem.inputImageUrls?.[0]
+              }, ...prev]);
+            }
           } catch (e) {
             console.warn('History save failed:', e);
           }
@@ -320,12 +365,30 @@ export default function ImageGenerator() {
   };
 
   const applyHistoryItem = (item: HistoryItem) => {
-    setImageUrl(item.imageUrl);
+    setImageUrl(item.url || item.imageUrl);
     setPrompt(item.prompt);
     let localMode: 'text-to-image' | 'image-to-image' | 'extend-image' = 'text-to-image';
     if (item.mode === 'img2img') localMode = 'image-to-image';
     if (item.mode === 'outpaint') localMode = 'extend-image';
     setMode(localMode);
+  };
+
+  const handleDeleteHistory = async (id: string) => {
+    try {
+      const historyHeaders: HeadersInit = {};
+      const apiKeyToUse = localApiKey || process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
+      if (apiKeyToUse) {
+        historyHeaders['x-api-key'] = apiKeyToUse;
+      }
+
+      await fetch(`/api/history?id=${id}`, {
+        method: 'DELETE',
+        headers: historyHeaders
+      });
+      setHistory(prev => prev.filter(item => item.id !== id));
+    } catch (e) {
+      console.error('Failed to delete history item', e);
+    }
   };
 
   const needsKey = model !== 'gemini-2.5-flash-image';
@@ -338,8 +401,8 @@ export default function ImageGenerator() {
       <div className="flex justify-center mb-8">
         <div className="bg-white p-1 rounded-2xl shadow-sm border border-gray-200 inline-flex">
           <button
-            onClick={() => setIsHistoryOpen(false)}
-            className={`px-6 py-2.5 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${!isHistoryOpen
+            onClick={() => setView('create')}
+            className={`px-6 py-2.5 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${view === 'create'
               ? 'bg-indigo-50 text-indigo-700 shadow-sm'
               : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
               }`}
@@ -348,313 +411,449 @@ export default function ImageGenerator() {
             Create
           </button>
           <button
-            onClick={() => setIsHistoryOpen(true)}
-            className={`px-6 py-2.5 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${isHistoryOpen
+            onClick={() => setView('history')}
+            className={`px-6 py-2.5 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${view === 'history'
               ? 'bg-indigo-50 text-indigo-700 shadow-sm'
               : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
               }`}
           >
             <History className="w-4 h-4" />
-            History Archive
+            History
+            {history.length > 0 && (
+              <span className="ml-1.5 bg-indigo-100 text-indigo-700 py-0.5 px-2 rounded-full text-xs">
+                {history.length}
+              </span>
+            )}
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <HistoryPanel
-          isOpen={isHistoryOpen}
-          onClose={() => setIsHistoryOpen(false)}
-          onSelectItem={applyHistoryItem}
-          apiKey={localApiKey || process.env.NEXT_PUBLIC_GEMINI_API_KEY || ''}
-        />
-        {/* Sidebar Controls */}
-        <div className="lg:col-span-4 space-y-6">
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                <Settings2 className="w-5 h-5 text-indigo-500" />
-                Settings
-              </h2>
-            </div>
-
-            <div className="space-y-6">
-              {/* Mode Selection */}
-              <div className="flex p-1 bg-gray-100 rounded-xl">
-                <button
-                  onClick={() => setMode('text-to-image')}
-                  className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2 ${mode === 'text-to-image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                  <Wand2 className="w-4 h-4" />
-                  Text to Image
-                </button>
-                <button
-                  onClick={() => setMode('image-to-image')}
-                  className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2 ${mode === 'image-to-image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                  <ImagePlus className="w-4 h-4" />
-                  Image to Image
-                </button>
-                <button
-                  onClick={() => setMode('extend-image')}
-                  className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2 ${mode === 'extend-image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                  <Maximize className="w-4 h-4" />
-                  Extend Image
-                </button>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Model
-                </label>
-                <select
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-gray-900 transition-all text-sm"
-                >
-                  {MODELS.map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Image Upload for I2I and Extend */}
-              <AnimatePresence>
-                {(mode === 'image-to-image' || mode === 'extend-image') && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="overflow-hidden space-y-4"
-                  >
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Reference Image
-                      </label>
-                      <div
-                        onClick={() => !referenceImage && fileInputRef.current?.click()}
-                        className={`relative border-2 border-dashed rounded-2xl p-4 transition-all flex flex-col items-center justify-center gap-2 text-center ${referenceImage
-                          ? 'border-indigo-300 bg-indigo-50/50'
-                          : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50 cursor-pointer'
-                          }`}
-                      >
-                        <input
-                          type="file"
-                          ref={fileInputRef}
-                          onChange={handleImageUpload}
-                          accept="image/*"
-                          className="hidden"
-                        />
-                        {referenceImage ? (
-                          <div className="relative w-full">
-                            {mode === 'extend-image' ? (
-                              <OutpaintCanvas
-                                key={`${referenceImage}-${aspectRatio}`}
-                                ref={outpaintCanvasRef}
-                                imageUrl={referenceImage}
-                                aspectRatio={aspectRatio}
-                              />
-                            ) : (
-                              /* eslint-disable-next-line @next/next/no-img-element */
-                              <img src={referenceImage} alt="Reference" className="w-full h-32 object-contain rounded-lg" />
-                            )}
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setReferenceImage(null); setReferenceImageMimeType(null); }}
-                              className="absolute -top-2 -right-2 p-1 bg-white rounded-full shadow-md text-gray-500 hover:text-red-500 z-10"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 mb-1">
-                              <Upload className="w-5 h-5" />
-                            </div>
-                            <p className="text-sm font-medium text-gray-700">Click to upload image</p>
-                            <p className="text-xs text-gray-500">PNG, JPG, WEBP up to 5MB</p>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Prompt
-                </label>
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder={mode === 'image-to-image' ? "Describe how to modify the image..." : "Describe the image you want to generate in detail..."}
-                  className="w-full h-32 p-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-gray-900 transition-all text-sm"
-                />
-              </div>
-
-              {currentSizes.length > 0 && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
-                    Resolution
-                  </label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {currentSizes.map((size) => (
-                      <button
-                        key={size.value}
-                        onClick={() => setImageSize(size.value)}
-                        className={`py-2 px-1 text-xs rounded-xl border transition-all duration-200 ${imageSize === size.value
-                          ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-medium shadow-sm'
-                          : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'
-                          }`}
-                      >
-                        {size.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {(mode === 'text-to-image' || mode === 'extend-image') && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
-                    Aspect Ratio
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {currentAspectRatios.map((ratio) => (
-                      <button
-                        key={ratio.value}
-                        onClick={() => setAspectRatio(ratio.value)}
-                        className={`py-2 px-3 text-xs rounded-xl border transition-all duration-200 flex-1 min-w-[60px] ${aspectRatio === ratio.value
-                          ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-medium shadow-sm'
-                          : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'
-                          }`}
-                      >
-                        {ratio.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
+      {view === 'create' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          {/* Sidebar Controls */}
+          <div className="lg:col-span-4 space-y-6">
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-6">
                 <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                  <Key className="w-5 h-5 text-indigo-500" />
-                  API Key
+                  <Settings2 className="w-5 h-5 text-indigo-500" />
+                  Settings
                 </h2>
               </div>
-              <div className="space-y-4">
-                <div>
-                  <input
-                    type="password"
-                    value={localApiKey}
-                    onChange={handleApiKeyChange}
-                    placeholder="Enter your Gemini API Key..."
-                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-gray-900 transition-all text-sm"
-                  />
-                  <p className="text-xs text-gray-500 mt-2">
-                    Your API key is stored locally in your browser and used for generation and fetching history.
-                  </p>
-                </div>
-                {!localApiKey && (
+
+              <div className="space-y-6">
+                {/* Mode Selection */}
+                <div className="flex p-1 bg-gray-100 rounded-xl">
                   <button
-                    onClick={handleConnectKey}
-                    className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2 shadow-sm"
+                    onClick={() => setMode('text-to-image')}
+                    className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2 ${mode === 'text-to-image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                      }`}
                   >
-                    <Key className="w-4 h-4" />
-                    Connect Studio Key
+                    <Wand2 className="w-4 h-4" />
+                    Text to Image
                   </button>
+                  <button
+                    onClick={() => setMode('image-to-image')}
+                    className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2 ${mode === 'image-to-image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                  >
+                    <ImagePlus className="w-4 h-4" />
+                    Image to Image
+                  </button>
+                  <button
+                    onClick={() => setMode('extend-image')}
+                    className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all flex items-center justify-center gap-2 ${mode === 'extend-image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                  >
+                    <Maximize className="w-4 h-4" />
+                    Extend Image
+                  </button>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Model
+                  </label>
+                  <select
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-gray-900 transition-all text-sm"
+                  >
+                    {MODELS.map((m) => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Image Upload for I2I and Extend */}
+                <AnimatePresence>
+                  {(mode === 'image-to-image' || mode === 'extend-image') && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden space-y-4"
+                    >
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Reference Image
+                        </label>
+                        <div
+                          onClick={() => !referenceImage && fileInputRef.current?.click()}
+                          className={`relative border-2 border-dashed rounded-2xl p-4 transition-all flex flex-col items-center justify-center gap-2 text-center ${referenceImage
+                            ? 'border-indigo-300 bg-indigo-50/50'
+                            : 'border-gray-300 hover:border-indigo-400 hover:bg-gray-50 cursor-pointer'
+                            }`}
+                        >
+                          <input
+                            type="file"
+                            ref={fileInputRef}
+                            onChange={handleImageUpload}
+                            accept="image/*"
+                            className="hidden"
+                          />
+                          {referenceImage ? (
+                            <div className="relative w-full">
+                              {mode === 'extend-image' ? (
+                                <OutpaintCanvas
+                                  key={`${referenceImage}-${aspectRatio}`}
+                                  ref={outpaintCanvasRef}
+                                  imageUrl={referenceImage}
+                                  aspectRatio={aspectRatio}
+                                />
+                              ) : (
+                                /* eslint-disable-next-line @next/next/no-img-element */
+                                <img src={referenceImage} alt="Reference" className="w-full h-32 object-contain rounded-lg" />
+                              )}
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setReferenceImage(null); setReferenceImageMimeType(null); }}
+                                className="absolute -top-2 -right-2 p-1 bg-white rounded-full shadow-md text-gray-500 hover:text-red-500 z-10"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-gray-500 mb-1">
+                                <Upload className="w-5 h-5" />
+                              </div>
+                              <p className="text-sm font-medium text-gray-700">Click to upload image</p>
+                              <p className="text-xs text-gray-500">PNG, JPG, WEBP up to 5MB</p>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Prompt
+                  </label>
+                  <textarea
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder={mode === 'image-to-image' ? "Describe how to modify the image..." : "Describe the image you want to generate in detail..."}
+                    className="w-full h-32 p-4 bg-gray-50 border border-gray-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-gray-900 transition-all text-sm"
+                  />
+                </div>
+
+                {currentSizes.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-3">
+                      Resolution
+                    </label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {currentSizes.map((size) => (
+                        <button
+                          key={size.value}
+                          onClick={() => setImageSize(size.value)}
+                          className={`py-2 px-1 text-xs rounded-xl border transition-all duration-200 ${imageSize === size.value
+                            ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-medium shadow-sm'
+                            : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'
+                            }`}
+                        >
+                          {size.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {(mode === 'text-to-image' || mode === 'extend-image') && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-3">
+                      Aspect Ratio
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {currentAspectRatios.map((ratio) => (
+                        <button
+                          key={ratio.value}
+                          onClick={() => setAspectRatio(ratio.value)}
+                          className={`py-2 px-3 text-xs rounded-xl border transition-all duration-200 flex-1 min-w-[60px] ${aspectRatio === ratio.value
+                            ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-medium shadow-sm'
+                            : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'
+                            }`}
+                        >
+                          {ratio.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
-            </div>
-          </div>
 
-          {/* Main Preview Area */}
-          <div className="lg:col-span-8">
-            <div className="bg-white p-4 sm:p-8 rounded-3xl shadow-sm border border-gray-100 min-h-[500px] lg:min-h-[600px] flex flex-col items-center justify-center relative overflow-hidden group">
-              {isGenerating ? (
-                <div className="flex flex-col items-center gap-6 text-gray-400">
-                  <div className="relative">
-                    <div className="absolute inset-0 bg-indigo-500 blur-xl opacity-20 rounded-full animate-pulse"></div>
-                    <Loader2 className="w-12 h-12 animate-spin text-indigo-500 relative z-10" />
-                  </div>
-                  <p className="text-sm font-medium animate-pulse text-gray-500">Crafting your vision...</p>
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <Key className="w-5 h-5 text-indigo-500" />
+                    API Key
+                  </h2>
                 </div>
-              ) : imageUrl ? (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 0.4, ease: "easeOut" }}
-                  className="relative w-full h-full flex items-center justify-center"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={imageUrl}
-                    alt={prompt}
-                    className="max-w-full max-h-[700px] object-contain rounded-2xl shadow-lg ring-1 ring-black/5"
-                  />
-                  <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                <div className="space-y-4">
+                  <div>
+                    <input
+                      type="password"
+                      value={localApiKey}
+                      onChange={handleApiKeyChange}
+                      placeholder="Enter your Gemini API Key..."
+                      className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-gray-900 transition-all text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      Your API key is stored locally in your browser and used for generation and fetching history.
+                    </p>
+                  </div>
+                  {!localApiKey && (
                     <button
-                      onClick={() => handleDownload(imageUrl)}
-                      className="p-3 bg-white/90 backdrop-blur-md text-gray-900 rounded-full shadow-lg hover:bg-white hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
-                      title="Download Image"
+                      onClick={handleConnectKey}
+                      className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2 shadow-sm"
                     >
-                      <Download className="w-5 h-5" />
+                      <Key className="w-4 h-4" />
+                      Connect Studio Key
                     </button>
-                  </div>
-                </motion.div>
-              ) : (
-                <div className="flex flex-col items-center gap-4 text-gray-300">
-                  <div className="w-24 h-24 rounded-full bg-gray-50 flex items-center justify-center mb-2">
-                    <ImageIcon className="w-10 h-10 text-gray-300" />
-                  </div>
-                  <p className="text-sm font-medium text-gray-400">Your generated image will appear here</p>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
-            <div className="mt-8">
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !prompt.trim() || ((mode === 'image-to-image' || mode === 'extend-image') && !referenceImage)}
-                className="w-full py-4 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-medium transition-all duration-200 disabled:opacity-50 disabled:hover:bg-indigo-600 flex items-center justify-center gap-2 shadow-sm hover:shadow-md lg:hidden"
-              >
+
+            {/* Main Preview Area */}
+            <div className="lg:col-span-8">
+              <div className="bg-white p-4 sm:p-8 rounded-3xl shadow-sm border border-gray-100 min-h-[500px] lg:min-h-[600px] flex flex-col items-center justify-center relative overflow-hidden group">
                 {isGenerating ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Generating...
-                  </>
+                  <div className="flex flex-col items-center gap-6 text-gray-400">
+                    <div className="relative">
+                      <div className="absolute inset-0 bg-indigo-500 blur-xl opacity-20 rounded-full animate-pulse"></div>
+                      <Loader2 className="w-12 h-12 animate-spin text-indigo-500 relative z-10" />
+                    </div>
+                    <p className="text-sm font-medium animate-pulse text-gray-500">Crafting your vision...</p>
+                  </div>
+                ) : imageUrl ? (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.4, ease: "easeOut" }}
+                    className="relative w-full h-full flex items-center justify-center"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={imageUrl}
+                      alt={prompt}
+                      className="max-w-full max-h-[700px] object-contain rounded-2xl shadow-lg ring-1 ring-black/5"
+                    />
+                    <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                      <button
+                        onClick={() => handleDownload(imageUrl)}
+                        className="p-3 bg-white/90 backdrop-blur-md text-gray-900 rounded-full shadow-lg hover:bg-white hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
+                        title="Download Image"
+                      >
+                        <Download className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </motion.div>
                 ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Generate Image
-                  </>
+                  <div className="flex flex-col items-center gap-4 text-gray-300">
+                    <div className="w-24 h-24 rounded-full bg-gray-50 flex items-center justify-center mb-2">
+                      <ImageIcon className="w-10 h-10 text-gray-300" />
+                    </div>
+                    <p className="text-sm font-medium text-gray-400">Your generated image will appear here</p>
+                  </div>
                 )}
-              </button>
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !prompt.trim() || ((mode === 'image-to-image' || mode === 'extend-image') && !referenceImage)}
-                className="hidden lg:flex w-full py-4 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-medium transition-all duration-200 disabled:opacity-50 disabled:hover:bg-indigo-600 items-center justify-center gap-2 shadow-sm hover:shadow-md"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Generate Image
-                  </>
-                )}
-              </button>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      ) : (
+        /* History View */
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white rounded-3xl shadow-sm border border-gray-100 p-6 sm:p-8 min-h-[600px]"
+        >
+          <div className="flex items-center justify-between mb-8">
+            <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+              <History className="w-6 h-6 text-indigo-500" />
+              Generation History
+            </h2>
+          </div>
+
+          {history.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-4">
+              <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center">
+                <ImageIcon className="w-8 h-8 text-gray-300" />
+              </div>
+              <p>No images generated yet.</p>
+              <button
+                onClick={() => setView('create')}
+                className="mt-2 text-indigo-600 hover:text-indigo-700 font-medium text-sm"
+              >
+                Go create one!
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+              <AnimatePresence>
+                {history.map((item) => (
+                  <motion.div
+                    key={item.id}
+                    layout
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    className="group relative rounded-2xl overflow-hidden bg-gray-100 aspect-square shadow-sm hover:shadow-md transition-all cursor-pointer"
+                    onClick={() => setSelectedHistoryItem(item)}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={item.thumbnailUrl || item.url || item.imageUrl}
+                      alt={item.prompt}
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-4">
+                      <p className="text-white text-sm font-medium line-clamp-2 mb-2">{item.prompt}</p>
+                      <div className="flex items-center justify-between">
+                        <span className="text-white/70 text-xs flex items-center gap-1">
+                          {item.mode === 'outpaint' ? <Maximize className="w-3 h-3" /> : item.mode === 'img2img' ? <ImagePlus className="w-3 h-3" /> : <Wand2 className="w-3 h-3" />}
+                          {new Date(item.timestamp).toLocaleDateString()}
+                        </span>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDownload(item.url || item.imageUrl); }}
+                            className="p-1.5 bg-white/20 hover:bg-white/40 rounded-lg backdrop-blur-sm text-white transition-colors"
+                            title="Download"
+                          >
+                            <Download className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteHistory(item.id); }}
+                            className="p-1.5 bg-red-500/80 hover:bg-red-600 rounded-lg backdrop-blur-sm text-white transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+          )}
+        </motion.div>
+      )}
+
+      {/* Lightbox Modal */}
+      <AnimatePresence>
+        {selectedHistoryItem && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-sm"
+            onClick={() => setSelectedHistoryItem(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl overflow-hidden max-w-6xl w-full max-h-[95vh] flex flex-col md:flex-row shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Image Area */}
+              <div className="flex-1 bg-gray-900 relative flex items-center justify-center p-4 min-h-[400px]">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={selectedHistoryItem.url || selectedHistoryItem.imageUrl} alt="Generated" className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-sm" />
+              </div>
+
+              {/* Details Area */}
+              <div className="w-full md:w-[400px] p-6 flex flex-col bg-white border-l border-gray-100 overflow-y-auto max-h-[95vh]">
+                <div className="flex justify-between items-start mb-6">
+                  <h3 className="text-xl font-bold text-gray-900">Image Details</h3>
+                  <button onClick={() => setSelectedHistoryItem(null)} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full text-gray-500 transition-colors">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="space-y-6 flex-1">
+                  <div>
+                    <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 block">Prompt</label>
+                    <p className="text-gray-800 text-sm bg-gray-50 p-4 rounded-xl border border-gray-100 whitespace-pre-wrap">{selectedHistoryItem.prompt}</p>
+                  </div>
+
+                  {(selectedHistoryItem.mode === 'img2img' || selectedHistoryItem.mode === 'outpaint') && selectedHistoryItem.referenceImage && (
+                    <div>
+                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 block">Reference Image</label>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={selectedHistoryItem.referenceImage} alt="Reference" className="w-full h-48 object-cover rounded-xl border border-gray-200 shadow-sm" />
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 block">Model</label>
+                      <p className="text-sm text-gray-700">{MODELS.find(m => m.value === selectedHistoryItem.model)?.label || selectedHistoryItem.model}</p>
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 block">Date</label>
+                      <p className="text-sm text-gray-700">{new Date(selectedHistoryItem.timestamp).toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-8 flex gap-3 pt-6 border-t border-gray-100 shrink-0">
+                  <button
+                    onClick={() => {
+                      applyHistoryItem(selectedHistoryItem);
+                      setSelectedHistoryItem(null);
+                      setView('create');
+                    }}
+                    className="flex-1 py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-xl font-medium transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Wand2 className="w-4 h-4" />
+                    Reuse
+                  </button>
+                  <button
+                    onClick={() => handleDownload(selectedHistoryItem.url || selectedHistoryItem.imageUrl)}
+                    className="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleDeleteHistory(selectedHistoryItem.id);
+                      setSelectedHistoryItem(null);
+                    }}
+                    className="py-3 px-4 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl font-medium transition-colors flex items-center justify-center gap-2"
+                    title="Delete from history"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
