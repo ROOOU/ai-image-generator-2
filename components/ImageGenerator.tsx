@@ -600,38 +600,77 @@ export default function ImageGenerator() {
                     </div>
                   </div>
                 )}
-              </div>
 
-              <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                    <Key className="w-5 h-5 text-indigo-500" />
-                    API Key
-                  </h2>
-                </div>
-                <div className="space-y-4">
-                  <div>
-                    <input
-                      type="password"
-                      value={localApiKey}
-                      onChange={handleApiKeyChange}
-                      placeholder="Enter your Gemini API Key..."
-                      className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-gray-900 transition-all text-sm"
-                    />
-                    <p className="text-xs text-gray-500 mt-2">
-                      Your API key is stored locally in your browser and used for generation and fetching history.
-                    </p>
-                  </div>
-                  {!localApiKey && (
+                {/* Combined API Key & Generate Block inside the main Settings Panel */}
+                <div className="pt-6 mt-6 border-t border-gray-100">
+                  {needsKey ? (
+                    <div className="space-y-4">
+                      {!hasKey ? (
+                        <div>
+                          <button
+                            onClick={handleConnectKey}
+                            className="w-full py-3.5 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2 shadow-sm"
+                          >
+                            <Key className="w-4 h-4" />
+                            Connect API Key
+                          </button>
+                          <p className="text-xs text-gray-500 mt-3 text-center">
+                            This model requires a paid API key. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:text-indigo-700">Learn more</a>
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          <div>
+                            <input
+                              type="password"
+                              value={localApiKey}
+                              onChange={handleApiKeyChange}
+                              placeholder="Enter your Gemini API Key..."
+                              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-gray-900 transition-all text-sm"
+                            />
+                            <p className="text-[10px] text-gray-400 mt-1.5 px-1">Stored locally in your browser.</p>
+                          </div>
+                          <button
+                            onClick={handleGenerate}
+                            disabled={isGenerating || !prompt.trim() || ((mode === 'image-to-image' || mode === 'extend-image') && !referenceImage)}
+                            className="w-full py-4 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-medium transition-all duration-200 disabled:opacity-50 disabled:hover:bg-indigo-600 flex items-center justify-center gap-2 shadow-sm hover:shadow-md"
+                          >
+                            {isGenerating ? (
+                              <>
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                                Generating...
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-5 h-5" />
+                                Generate Image
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
                     <button
-                      onClick={handleConnectKey}
-                      className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2 shadow-sm"
+                      onClick={handleGenerate}
+                      disabled={isGenerating || !prompt.trim() || ((mode === 'image-to-image' || mode === 'extend-image') && !referenceImage)}
+                      className="w-full py-4 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-medium transition-all duration-200 disabled:opacity-50 disabled:hover:bg-indigo-600 flex items-center justify-center gap-2 shadow-sm hover:shadow-md"
                     >
-                      <Key className="w-4 h-4" />
-                      Connect Studio Key
+                      {isGenerating ? (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-5 h-5" />
+                          Generate Image
+                        </>
+                      )}
                     </button>
                   )}
                 </div>
+
               </div>
             </div>
 
@@ -678,42 +717,6 @@ export default function ImageGenerator() {
                   </div>
                 )}
               </div>
-            </div>
-            <div className="mt-8">
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !prompt.trim() || ((mode === 'image-to-image' || mode === 'extend-image') && !referenceImage)}
-                className="w-full py-4 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-medium transition-all duration-200 disabled:opacity-50 disabled:hover:bg-indigo-600 flex items-center justify-center gap-2 shadow-sm hover:shadow-md lg:hidden"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Generate Image
-                  </>
-                )}
-              </button>
-              <button
-                onClick={handleGenerate}
-                disabled={isGenerating || !prompt.trim() || ((mode === 'image-to-image' || mode === 'extend-image') && !referenceImage)}
-                className="hidden lg:flex w-full py-4 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-medium transition-all duration-200 disabled:opacity-50 disabled:hover:bg-indigo-600 items-center justify-center gap-2 shadow-sm hover:shadow-md"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-5 h-5" />
-                    Generate Image
-                  </>
-                )}
-              </button>
             </div>
           </div>
         </div>
